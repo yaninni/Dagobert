@@ -20,11 +20,31 @@ public static class Communicator
         if (string.IsNullOrEmpty(rawName)) return "Unknown Item";
         try
         {
-            string working = rawName.Replace("\uE03C", " (HQ)");
-            string clean = CleanNameRegex.Replace(working, "").Trim();
-            if (string.IsNullOrWhiteSpace(clean))
-                clean = new string(working.Where(c => !char.IsControl(c)).ToArray()).Trim();
-            return clean;
+            var se = SeString.Parse(Encoding.UTF8.GetBytes(rawName));
+            var sb = new StringBuilder();
+            foreach (var p in se.Payloads) if (p is TextPayload tp) sb.Append(tp.Text);
+            
+            string clean = sb.Length > 0 ? sb.ToString() : rawName;
+            
+            clean = clean.Replace("\uE03C", "").Replace("\uE03B", "");
+            
+            clean = new string(clean.Where(c => !char.IsControl(c)).ToArray());
+            
+            int startIdx = 0;
+            while (startIdx < clean.Length)
+            {
+                char c = clean[startIdx];
+                if (char.IsLetterOrDigit(c) || c == '(' || c == '[' || c == '{' || c == '<') break;
+                if (c == '%' || c == '&' || char.IsWhiteSpace(c))
+                {
+                    startIdx++;
+                    continue;
+                }
+                break;
+            }
+            
+            if (startIdx >= clean.Length) return clean.Trim();
+            return clean.Substring(startIdx).Trim();
         }
         catch { return "Unknown Item"; }
     }
@@ -45,7 +65,7 @@ public static class Communicator
                 Svc.Chat.Print(seString);
             }
             else
-                Svc.Chat.Print($"{itemName}: Pinching from {oldPrice.Value:N0} to {newPrice.Value:N0}, a {dec} of {MathF.Abs(MathF.Round(cutPercentage, 2))}%");
+                Svc.Chat.Print($"{GetCleanItemName(itemName)}: Pinching from {oldPrice.Value:N0} to {newPrice.Value:N0} gil, a {dec} of {MathF.Abs(MathF.Round(cutPercentage, 2))}%");
         }
     }
 
@@ -53,31 +73,8 @@ public static class Communicator
     {
         try
         {
-            var seString = SeString.Parse(Encoding.UTF8.GetBytes(itemName));
-            var textPayloads = seString.Payloads.OfType<TextPayload>().ToList();
-            if (textPayloads.Count == 0) return null;
-
-            var cleanedName = "";
-            var isHq = false;
-
-            if (textPayloads.Count == 1) cleanedName = textPayloads[0].Text?.Trim();
-            else if (textPayloads.Count >= 2)
-            {
-                var nameParts = new StringBuilder();
-                for (int i = 1; i < textPayloads.Count; i++)
-                {
-                    var text = textPayloads[i].Text;
-                    if (i == 1 && text?.Length >= 2 && text[1] == '\u0003') text = text[2..];
-                    nameParts.Append(text);
-                }
-                cleanedName = nameParts.ToString();
-                if (cleanedName.Length >= 1 && cleanedName[^1] == '\uE03C')
-                {
-                    isHq = true;
-                    cleanedName = cleanedName[..^1].TrimEnd();
-                }
-                else cleanedName = cleanedName.TrimEnd();
-            }
+            var cleanedName = GetCleanItemName(itemName);
+            var isHq = itemName.Contains('\uE03C');
 
             var item = ItemSheet.FirstOrDefault(i => i.Name.ToString().Equals(cleanedName, StringComparison.OrdinalIgnoreCase));
             if (item.RowId > 0) return new ItemPayload(item.RowId, isHq);
@@ -99,7 +96,7 @@ public static class Communicator
                     .Build();
                 Svc.Chat.PrintError(seString);
             }
-            else Svc.Chat.PrintError($"{itemName}: Item ignored because it would cut the price by more than {Plugin.Configuration.MaxUndercutPercentage}%");
+            else Svc.Chat.PrintError($"{GetCleanItemName(itemName)}: Item ignored because it would cut the price by more than {Plugin.Configuration.MaxUndercutPercentage}%");
         }
     }
 
@@ -128,7 +125,7 @@ public static class Communicator
                     .Build();
                 Svc.Chat.PrintError(seString);
             }
-            else Svc.Chat.PrintError($"{itemName}: No price to set, please set price manually");
+            else Svc.Chat.PrintError($"{GetCleanItemName(itemName)}: No price to set, please set price manually");
         }
     }
 

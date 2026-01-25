@@ -35,6 +35,13 @@ namespace Dagobert
             return false;
         }
 
+        public static bool IsWindowVisible(void* addonPtr)
+        {
+            if (addonPtr == null) return false;
+            var addon = (AtkUnitBase*)addonPtr;
+            return IsAddonReady(addon) && addon->IsVisible;
+        }
+
         public static void CloseWindow(string addonName)
         {
             if (TryGetAddonByName<AtkUnitBase>(addonName, out var addon) && IsAddonReady(addon))
@@ -142,6 +149,14 @@ namespace Dagobert
         public static bool? ConfirmRetainerSellPrice(bool success)
         {
             return FireCallback(UIConsts.AddonRetainerSell, true, success ? 0 : 1);
+        }
+
+        public static void SkipTalk()
+        {
+            if (TryGetAddonByName<AtkUnitBase>(UIConsts.AddonTalk, out var addon) && IsAddonReady(addon))
+            {
+                if (addon->IsVisible) new AddonMaster.Talk(addon).Click();
+            }
         }
     }
 }

@@ -106,7 +106,8 @@ namespace Dagobert
             _tm.Abort();
             RemoveTalkListeners();
         }
-        private unsafe void PinchAllRetainers() // this is absolutely fucked and I am not sure where I went wrong needs fixing soon TM
+
+        private unsafe void PinchAllRetainers()
         {
             if (_tm.IsBusy) return;
             ClearState();
@@ -114,6 +115,7 @@ namespace Dagobert
 
             Svc.AddonLifecycle.RegisterListener(AddonEvent.PostSetup, UIConsts.AddonTalk, SkipRetainerDialog);
             Svc.AddonLifecycle.RegisterListener(AddonEvent.PostUpdate, UIConsts.AddonTalk, SkipRetainerDialog);
+            
             var retainers = new AddonMaster.RetainerList(addon).Retainers;
             var enabledNames = Plugin.Configuration.EnabledRetainerNames;
 
@@ -131,25 +133,27 @@ namespace Dagobert
                 if (enabledNames.Count > 0 && !enabledNames.Contains(name)) continue;
 
                 int capturedIndex = i;
+                string capturedName = name;
+
                 _tm.Enqueue(() => AddonInteractor.SelectRetainer(capturedIndex), $"ClickRetainer_{i}");
-
-                _tm.Enqueue(() => _stats = new RetainerStats(name));
+                _tm.Enqueue(WaitForSelectStringVisible, $"WaitSelectString_{i}");
+                _tm.Enqueue(() => { _stats = new RetainerStats(capturedName); return true; }, $"InitStats_{i}");
                 _tm.DelayNext(Humanizer.GetReactionDelay());
 
-                _tm.Enqueue(AddonInteractor.ClickSellFromInventory, "SellItems");
-                _tm.Enqueue(WaitForSellListVisible, "WaitForSellList");
-                _tm.Enqueue(() => QueueItems(InsertSingleItem, true));
+                _tm.Enqueue(AddonInteractor.ClickSellFromInventory, $"SellItems_{i}");
+                _tm.Enqueue(WaitForSellListVisible, $"WaitForSellList_{i}");
+                _tm.Enqueue(() => QueueItems(InsertSingleItem, true), $"QueueItems_{i}");
 
                 _tm.DelayNext(Humanizer.GetReactionDelay());
-                _tm.Enqueue(() => AddonInteractor.CloseWindow(UIConsts.AddonRetainerSellList), "CloseSellList");
+                _tm.Enqueue(() => AddonInteractor.CloseWindow(UIConsts.AddonRetainerSellList), $"CloseSellList_{i}");
                 _tm.DelayNext(Humanizer.GetReactionDelay());
-                _tm.Enqueue(SendReport);
-                _tm.Enqueue(() => AddonInteractor.CloseWindow(UIConsts.AddonSelectString), "CloseRetainer");
+                _tm.Enqueue(() => { SendReport(); return true; }, $"Report_{i}");
+                _tm.Enqueue(() => AddonInteractor.CloseWindow(UIConsts.AddonSelectString), $"CloseRetainer_{i}");
                 _tm.DelayNext(Humanizer.GetReactionDelay() + 200);
             }
 
-            _tm.Enqueue(RemoveTalkListeners);
-            _tm.Enqueue(() => DiscordSender.SendLog("[Finished] Auto Pinch."));
+            _tm.Enqueue(() => { RemoveTalkListeners(); return true; }, "CleanupListeners");
+            _tm.Enqueue(() => { DiscordSender.SendLog("[Finished] Auto Pinch."); return true; }, "FinishLog");
         }
 
         private void PinchAllRetainerItems()
@@ -194,56 +198,86 @@ namespace Dagobert
             _tm.Enqueue(() => { _currentItemIndex++; _itemsProcessedSession++; return true; }, "Inc");
         }
 
-        private void EnqueueSingleItem(int i) => BuildItemTaskChain(i, (f, n) => _tm.Enqueue(f, n), ms => _tm.DelayNext(ms));
-        private void InsertSingleItem(int i) => BuildItemTaskChain(i, (f, n) => _tm.Insert(f, n), ms => _tm.InsertDelayNext(ms));
+        private void EnqueueSingleItem(int i) => BuildItemTaskChain(i, false);
+        private void InsertSingleItem(int i) => BuildItemTaskChain(i, true);
 
-        private void BuildItemTaskChain(int index, Action<Func<bool?>, string> add, Action<int> delay)
+        private void BuildItemTaskChain(int index, bool isInsert)
         {
-            add(() => {
+            var tasks = new List<(Func<bool?>, string)>();
+
+            tasks.Add((() => {
                 _newPrice = null;
                 _skipItem = false;
                 _mbHandler.Reset();
                 _priceWaitStart = 0;
                 return true;
-            }, "ResetState");
+            }, "ResetState"));
 
             if (Plugin.Configuration.EnableAdvancedHumanization && Humanizer.ShouldTakeMicroBreak())
             {
-                delay(Random.Shared.Next(4000, 8000));
+                tasks.Add((() => { _tm.InsertDelayNext(Random.Shared.Next(4000, 8000)); return true; }, "MicroBreak"));
             }
 
             if (Plugin.Configuration.EnableMisclicks && Random.Shared.Next(100) < 2)
             {
-                add(() => AddonInteractor.OpenContextMenuForSellItem(index + 1), "Misclick_Open");
-                delay(Humanizer.GetReactionDelay() + 200);
-                add(() => { AddonInteractor.CloseWindow(UIConsts.AddonContextMenu); return true; }, "Misclick_Close");
-                delay(Humanizer.GetReactionDelay() + 400);
+                tasks.Add((() => AddonInteractor.OpenContextMenuForSellItem(index + 1), "Misclick_Open"));
+                tasks.Add((() => { _tm.InsertDelayNext(Humanizer.GetReactionDelay() + 200); return true; }, "Misclick_Delay1"));
+                tasks.Add((() => { AddonInteractor.CloseWindow(UIConsts.AddonContextMenu); return true; }, "Misclick_Close"));
+                tasks.Add((() => { _tm.InsertDelayNext(Humanizer.GetReactionDelay() + 400); return true; }, "Misclick_Delay2"));
             }
 
-            delay(Humanizer.GetFittsDelay());
-            add(() => AddonInteractor.OpenContextMenuForSellItem(index), $"Ctx_{index}");
+            tasks.Add((() => { _tm.InsertDelayNext(Humanizer.GetFittsDelay()); return true; }, "FittsDelay"));
+            tasks.Add((() => AddonInteractor.OpenContextMenuForSellItem(index), $"Ctx_{index}"));
 
-            add(WaitForContextMenuVisible, "WaitMenu");
-            add(ClickAdjustPrice, $"Adj_{index}");
-            add(WaitForRetainerSellVisible, "WaitSellWin");
+            tasks.Add((WaitForContextMenuVisible, "WaitMenu"));
+            tasks.Add((ClickAdjustPrice, $"Adj_{index}"));
+            tasks.Add((WaitForRetainerSellVisible, "WaitSellWin"));
 
-            add(DelayMarketBoard, $"WaitMB_{index}");
-            add(ClickComparePrice, $"Cmp_{index}");
-            add(WaitForSearchResultVisible, "WaitSearchWin");
-            add(WaitForPriceData, "WaitData");
-            add(CheckForBaitInspection, $"BaitCheck_{index}");
+            tasks.Add((DelayMarketBoard, $"WaitMB_{index}"));
+            tasks.Add((ClickComparePrice, $"Cmp_{index}"));
+            tasks.Add((WaitForSearchResultVisible, "WaitSearchWin"));
+            tasks.Add((WaitForPriceData, "WaitData"));
+            tasks.Add((CheckForBaitInspection, $"BaitCheck_{index}"));
 
-            int rnd = RandomDelayGenerator.GetRandomDelay(Plugin.Configuration.MarketBoardKeepOpenMin, Plugin.Configuration.MarketBoardKeepOpenMax, Strategy);
-            if (Plugin.Configuration.EnableAdvancedHumanization) rnd = Humanizer.GetCognitiveDelay(rnd);
-            if (Plugin.Configuration.EnableFatigue) rnd += (_itemsProcessedSession * 50);
-            delay(rnd);
+            tasks.Add((() => {
+                int rnd = RandomDelayGenerator.GetRandomDelay(Plugin.Configuration.MarketBoardKeepOpenMin, Plugin.Configuration.MarketBoardKeepOpenMax, Strategy);
+                if (Plugin.Configuration.EnableAdvancedHumanization) rnd = Humanizer.GetCognitiveDelay(rnd);
+                if (Plugin.Configuration.EnableFatigue) rnd += (_itemsProcessedSession * 50);
+                _tm.InsertDelayNext(rnd);
+                return true;
+            }, "KeepOpenDelay"));
 
-            add(SetNewPrice, $"Set_{index}");
-            add(() => { _currentItemIndex++; _itemsProcessedSession++; return true; }, "Inc");
+            tasks.Add((SetNewPrice, $"Set_{index}"));
+            tasks.Add((() => { _currentItemIndex++; _itemsProcessedSession++; return true; }, "Inc"));
+
+            if (isInsert)
+            {
+                for (int i = tasks.Count - 1; i >= 0; i--)
+                {
+                    _tm.Insert(tasks[i].Item1, tasks[i].Item2);
+                }
+            }
+            else
+            {
+                foreach (var t in tasks)
+                {
+                    _tm.Enqueue(t.Item1, t.Item2);
+                }
+            }
         }
         private bool? WaitForSellListVisible()
         {
             if (AddonInteractor.IsWindowVisible(UIConsts.AddonRetainerSellList))
+            {
+                _tm.DelayNext(Humanizer.GetReactionDelay());
+                return true;
+            }
+            return false;
+        }
+
+        private bool? WaitForSelectStringVisible()
+        {
+            if (AddonInteractor.IsWindowVisible(UIConsts.AddonSelectString))
             {
                 _tm.DelayNext(Humanizer.GetReactionDelay());
                 return true;
@@ -481,8 +515,19 @@ namespace Dagobert
         }
 
         private void SendReport() { if (_stats != null) DiscordSender.SendLog(_stats.BuildReport()); _stats = null; }
-        private void ClearState() { _newPrice = null; _cachedPrices.Clear(); _skipItem = false; _stats = null; _totalItemsRetainer = 0; Humanizer.Reset(); }
-        private unsafe void SkipRetainerDialog(AddonEvent t, AddonArgs a) { if (!_tm.IsBusy) RemoveTalkListeners(); else if (((AtkUnitBase*)a.Addon.Address)->IsVisible) new AddonMaster.Talk(a.Addon).Click(); }
+        private void ClearState()
+        {
+            _newPrice = null;
+            _cachedPrices.Clear();
+            _skipItem = false;
+            _stats = null;
+            _totalItemsRetainer = 0;
+            _currentItemIndex = 0;
+            _itemsProcessedSession = 0;
+            Humanizer.Reset();
+            _mbHandler.Reset();
+        }
+        private unsafe void SkipRetainerDialog(AddonEvent t, AddonArgs a) { if (!_tm.IsBusy) RemoveTalkListeners(); else AddonInteractor.SkipTalk(); }
         private void RemoveTalkListeners() { Svc.AddonLifecycle.UnregisterListener(AddonEvent.PostSetup, UIConsts.AddonTalk, SkipRetainerDialog); Svc.AddonLifecycle.UnregisterListener(AddonEvent.PostUpdate, UIConsts.AddonTalk, SkipRetainerDialog); }
         private static bool IsItemMannequin(List<ContextMenuEntry> e) => !e.Any(x => x.Name.Contains("price", StringComparison.OrdinalIgnoreCase) || x.Name.Contains("preis", StringComparison.OrdinalIgnoreCase) || x.Name.Contains("価格", StringComparison.OrdinalIgnoreCase) || x.Name.Contains("prix", StringComparison.OrdinalIgnoreCase));
     }

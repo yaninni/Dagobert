@@ -21,6 +21,7 @@ namespace Dagobert
 
         public int CurrentStackSize { get; set; } = 1;
         public int? DetectedBaitIndex { get; private set; } = null;
+        private readonly HashSet<ulong> _ownRetainerIds = new();
 
         public event EventHandler<NewPriceEventArgs>? NewPriceReceived;
 
@@ -48,6 +49,7 @@ namespace Dagobert
             _lastRequestId = -1;
             _newRequest = false;
             DetectedBaitIndex = null;
+            _ownRetainerIds.Clear();
         }
 
         private void OnOfferings(IMarketBoardCurrentOfferings offer)
@@ -132,9 +134,7 @@ namespace Dagobert
             ItemSettings? itemSet = null;
             if (cfg.ItemConfigs.TryGetValue(itemId, out var settings)) itemSet = settings;
 
-            // Double check ignore (redundant but safe)
-            if (itemSet != null && itemSet.Ignore) return PRICE_IGNORED;
-
+            // Pricing Personality
             int p;
 
             if (!cfg.UndercutSelf && IsOwnRetainer(retainerId)) p = lowest;
@@ -168,11 +168,19 @@ namespace Dagobert
 
         private bool IsOwnRetainer(ulong id)
         {
-            var mgr = RetainerManager.Instance();
-            if (mgr == null) return false;
-            for (uint i = 0; i < mgr->GetRetainerCount(); ++i)
-                if (mgr->GetRetainerBySortedIndex(i)->RetainerId == id) return true;
-            return false;
+            if (_ownRetainerIds.Count == 0)
+            {
+                var mgr = RetainerManager.Instance();
+                if (mgr != null)
+                {
+                    for (uint i = 0; i < mgr->GetRetainerCount(); ++i)
+                    {
+                        var retainer = mgr->GetRetainerBySortedIndex(i);
+                        if (retainer != null) _ownRetainerIds.Add(retainer->RetainerId);
+                    }
+                }
+            }
+            return _ownRetainerIds.Contains(id);
         }
 
         private void OnSearchResultSetup(AddonEvent t, AddonArgs a) { _newRequest = true; _useHq = Plugin.Configuration.HQ && _itemHq; }
