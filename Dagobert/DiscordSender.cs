@@ -4,20 +4,30 @@ using System.Text;
 using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
-// TODO this needs to be reworked/improved HQ items amongst other string specific things are cooked
+using Dagobert.Utilities;
+
 namespace Dagobert
 {
     public static class DiscordSender
     {
         private static readonly HttpClient _httpClient = new HttpClient();
         private static readonly SemaphoreSlim _semaphore = new SemaphoreSlim(1, 1);
+        private static bool _disposed = false;
+
+        public static void Dispose()
+        {
+            if (_disposed) return;
+            _disposed = true;
+            _httpClient.Dispose();
+            _semaphore.Dispose();
+        }
 
         public static void SendLog(string message)
         {
             if (!Plugin.Configuration.EnableDiscordLogging || string.IsNullOrWhiteSpace(Plugin.Configuration.DiscordWebhookUrl))
                 return;
 
-            Task.Run(async () => await SendPayloadAsync(new { content = message, username = "Dagobert" }));
+            _ = SendPayloadAsync(new { content = message, username = "Dagobert" }, CancellationToken.None);
         }
 
         public static void SendAlert(string senderName, string messageContent)
@@ -26,10 +36,10 @@ namespace Dagobert
                 return;
 
             string alertMsg = $"**EMERGENCY STOP** @everyone\n**From:** {senderName}\n**Message:** `{messageContent}`";
-            Task.Run(async () => await SendPayloadAsync(new { content = alertMsg, username = "Dagobert" }));
+            _ = SendPayloadAsync(new { content = alertMsg, username = "Dagobert" }, CancellationToken.None);
         }
 
-        public static void SendSaleNotification(string itemName, int price, string city, bool isHq, long totalEarned, int totalSold)
+        public static void SendSaleNotification(string itemName, uint itemId, int price, string city, bool isHq, long totalEarned, int totalSold)
         {
             if (!Plugin.Configuration.EnableDiscordLogging || string.IsNullOrWhiteSpace(Plugin.Configuration.DiscordWebhookUrl))
                 return;
@@ -45,7 +55,7 @@ namespace Dagobert
                         color = 5763719,
                         fields = new[]
                         {
-                            new { name = "Item", value = $"{itemName} {(isHq ? "(HQ)" : "")}", inline = true },
+                            new { name = "Item", value = $"[{itemName}]({ItemUtils.GetGarlandToolsLink(itemId)}) {(isHq ? "(HQ)" : "")}", inline = true },
                             new { name = "Price", value = $"{price:N0} gil", inline = true },
                             new { name = "Market", value = city, inline = true },
                             new { name = "Lifetime Stats", value = $"Total Earned: {totalEarned:N0} gil\nItems Sold: {totalSold:N0}", inline = false }
@@ -55,26 +65,31 @@ namespace Dagobert
                 }
             };
 
-            Task.Run(async () => await SendPayloadAsync(payload));
+            _ = SendPayloadAsync(payload, CancellationToken.None);
         }
 
-        private static async Task SendPayloadAsync(object payload)
+        private static async Task SendPayloadAsync(object payload, CancellationToken cancellationToken)
         {
-            await _semaphore.WaitAsync();
+            await _semaphore.WaitAsync(cancellationToken);
             try
             {
                 string json = JsonSerializer.Serialize(payload);
                 var httpContent = new StringContent(json, Encoding.UTF8, "application/json");
 
-                var response = await _httpClient.PostAsync(Plugin.Configuration.DiscordWebhookUrl, httpContent);
+                var response = await _httpClient.PostAsync(Plugin.Configuration.DiscordWebhookUrl, httpContent, cancellationToken);
 
                 if (response.StatusCode == System.Net.HttpStatusCode.TooManyRequests)
                 {
-                    await Task.Delay(1000);
+                    await Task.Delay(1000, cancellationToken);
                 }
             }
-            catch { 
-
+            catch (OperationCanceledException)
+            {
+                // ignore silent
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"Discord webhook error: {ex.Message}");
             }
             finally
             {

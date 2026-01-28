@@ -8,6 +8,8 @@ using Lumina.Excel.Sheets;
 using System;
 using System.Linq;
 using System.Collections.Generic;
+using Dagobert.Windows;
+using Dagobert.Utilities;
 
 namespace Dagobert
 {
@@ -68,7 +70,6 @@ namespace Dagobert
                 return;
             }
 
-            // --- Check Ignore Config Immediately ---
             if (Plugin.Configuration.ItemConfigs.TryGetValue(itemId, out var settings))
             {
                 if (settings.Ignore)
@@ -80,51 +81,91 @@ namespace Dagobert
                 }
             }
 
-            // --- Filtering Logic ---
-            var itemSheetRow = _items.GetRow(itemId);
-            bool canBeHq = itemSheetRow.RowId != 0 && itemSheetRow.CanBeHq;
-
-            var listings = offer.ItemListings.AsEnumerable();
-
-            if (Plugin.Configuration.MatchStackSize && CurrentStackSize > 1)
+            Item itemSheetRow;
+            bool canBeHq = false;
+            try
             {
-                listings = listings.Where(l => l.ItemQuantity >= (CurrentStackSize * 0.5) || l.ItemQuantity == 99);
-                if (!listings.Any()) listings = offer.ItemListings.AsEnumerable();
+                itemSheetRow = _items.GetRow(itemId);
+                canBeHq = itemSheetRow.RowId != 0 && itemSheetRow.CanBeHq;
+            }
+            catch
+            {
+                Svc.Log.Warning($"MarketBoard: Failed to get item sheet for ID {itemId}");
             }
 
-            if (_useHq && canBeHq)
-                listings = listings.Where(l => l.IsHq);
+            IMarketBoardItemListing targetListing = null;
+            bool useOutlier = Plugin.Configuration.SmartOutlierProtection;
+            int maxOutliersToCheck = useOutlier ? 20 : 1;
+            
+            var listingsArray = System.Buffers.ArrayPool<IMarketBoardItemListing>.Shared.Rent(Math.Min(offer.ItemListings.Count, 20));
+            int validCount = 0;
 
-            var validListings = listings.ToList();
-            if (validListings.Count == 0)
+            foreach (var l in offer.ItemListings)
             {
+                if (validCount >= maxOutliersToCheck) break;
+
+                if (Plugin.Configuration.MatchStackSize && CurrentStackSize > 1)
+                {
+                    if (!(l.ItemQuantity >= (CurrentStackSize * 0.5) || l.ItemQuantity == 99)) continue;
+                }
+
+                if (_useHq && canBeHq && !l.IsHq) continue;
+
+                listingsArray[validCount++] = l;
+            }
+
+            if (validCount == 0 && Plugin.Configuration.MatchStackSize && CurrentStackSize > 1)
+            {
+                foreach (var l in offer.ItemListings)
+                {
+                    if (validCount >= maxOutliersToCheck) break;
+                    if (_useHq && canBeHq && !l.IsHq) continue;
+                    listingsArray[validCount++] = l;
+                }
+            }
+
+            if (validCount == 0)
+            {
+                System.Buffers.ArrayPool<IMarketBoardItemListing>.Shared.Return(listingsArray);
                 _lastRequestId = offer.RequestId;
                 _newRequest = false;
+                VisualMonitor.LogActivity(ActivityType.Warning, "MarketBoard: No valid data");
                 UpdatePrice(PRICE_NO_DATA);
                 return;
             }
 
-            // --- Smart Outlier Protection ---
-            var targetListing = validListings[0];
-            if (Plugin.Configuration.SmartOutlierProtection && validListings.Count >= 2)
+            targetListing = listingsArray[0];
+            if (useOutlier && validCount >= 2)
             {
-                var first = validListings[0].PricePerUnit;
-                var second = validListings[1].PricePerUnit;
-                if (first < (second * 0.5))
+                for (int i = 0; i < validCount - 1; i++)
                 {
-                    targetListing = validListings[1];
-                    DetectedBaitIndex = 0;
+                    var currentPrice = listingsArray[i].PricePerUnit;
+                    var nextPrice = listingsArray[i+1].PricePerUnit;
+                    
+                    if (currentPrice < (nextPrice * 0.5))
+                    {
+                        // Found a potential bait/outlier
+                        targetListing = listingsArray[i+1];
+                        DetectedBaitIndex = 0; 
+                    }
+                    else
+                    {
+                        break;
+                    }
                 }
             }
 
             int lowest = (int)targetListing.PricePerUnit;
             int final = CalculatePrice(lowest, targetListing.RetainerId, itemId);
+            
+            System.Buffers.ArrayPool<IMarketBoardItemListing>.Shared.Return(listingsArray);
 
             if (final > lowest) final = lowest;
             if (final < 1) final = 1;
 
             _lastRequestId = offer.RequestId;
             _newRequest = false;
+            VisualMonitor.LogActivity(ActivityType.Success, $"Recieved Price: {final} gil");
             UpdatePrice(final);
         }
 
@@ -134,7 +175,6 @@ namespace Dagobert
             ItemSettings? itemSet = null;
             if (cfg.ItemConfigs.TryGetValue(itemId, out var settings)) itemSet = settings;
 
-            // Pricing Personality
             int p;
 
             if (!cfg.UndercutSelf && IsOwnRetainer(retainerId)) p = lowest;
@@ -148,7 +188,6 @@ namespace Dagobert
                     p = Math.Max((100 - cfg.UndercutAmount) * lowest / 100, 1);
             }
 
-            // Clean Numbers
             if (cfg.PricingPersonality == PricingPersonality.CleanNumbers)
             {
                 if (p > 100000) p = (p / 1000) * 1000;
@@ -157,7 +196,6 @@ namespace Dagobert
                 if (p < 1) p = 1;
             }
 
-            // Min Price Enforce
             if (itemSet != null && itemSet.MinPrice > 0)
             {
                 if (p < itemSet.MinPrice) p = itemSet.MinPrice;

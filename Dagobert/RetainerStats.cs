@@ -1,6 +1,7 @@
 ﻿using System.Collections.Generic;
 using System.Text;
-//TOOD this needs to be reworked perhaps?
+using Dagobert.Utilities;
+
 namespace Dagobert
 {
     public class RetainerStats
@@ -15,22 +16,25 @@ namespace Dagobert
             RetainerName = retainerName;
         }
 
-        public void AddChange(string itemName, int oldPrice, int newPrice, float cutPercent)
+        public void AddChange(string itemName, uint itemId, int oldPrice, int newPrice, float cutPercent)
         {
             _totalChecked++;
-            _changes.Add($"• **{itemName}**: ~~{oldPrice:N0}~~ → **{newPrice:N0}** `({cutPercent:F2}%)`");
+            string link = ItemUtils.GetGarlandToolsLink(itemId);
+            _changes.Add($"• **[{itemName}]({link})**: ~~{oldPrice:N0}~~ → **{newPrice:N0}** `({cutPercent:F2}%)`");
         }
 
-        public void AddSkip(string itemName, string reason)
+        public void AddSkip(string itemName, uint itemId, string reason)
         {
             _totalChecked++;
-            _skips.Add($"• {itemName}: *{reason}*");
+            string link = ItemUtils.GetGarlandToolsLink(itemId);
+            _skips.Add($"• [{itemName}]({link}): *{reason}*");
         }
 
-        public void AddError(string itemName, string error)
+        public void AddError(string itemName, uint itemId, string error)
         {
             _totalChecked++;
-            _skips.Add($"• ⚠️ {itemName}: *{error}*");
+            string link = ItemUtils.GetGarlandToolsLink(itemId);
+            _skips.Add($"• ⚠️ [{itemName}]({link}): *{error}*");
         }
 
         public string BuildReport()

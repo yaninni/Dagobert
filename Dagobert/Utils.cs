@@ -1,6 +1,4 @@
-﻿using Dalamud.Bindings.ImGui;
-
-namespace Dagobert
+﻿namespace Dagobert
 {
     /// <summary>
     /// Constants for Game UI Addons, Node IDs, and Callback Indices.
@@ -24,18 +22,6 @@ namespace Dagobert
 
     public static class Utils
     {
-
-    }
-    public static class ImGuiHelper
-    {
-        public static void Tooltip(string s)
-        {
-            if (ImGui.IsItemHovered())
-            {
-                ImGui.BeginTooltip();
-                ImGui.SetTooltip(s);
-                ImGui.EndTooltip();
-            }
-        }
+        // General utility functions can be added here
     }
 }

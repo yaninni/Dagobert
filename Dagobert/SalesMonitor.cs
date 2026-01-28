@@ -3,12 +3,17 @@ using Dalamud.Game.Text.SeStringHandling;
 using ECommons.DalamudServices;
 using System;
 using System.Text.RegularExpressions;
-// this shit is broken for now TODO
+using Dagobert.Windows;
+using Dagobert.Utilities;
+
 namespace Dagobert
 {
     public class SalesMonitor : IDisposable
     {
         private static readonly Regex SaleRx = new(@"sale in the (?<city>.+) markets sold for (?<price>[\d,.]+) gil", RegexOptions.Compiled | RegexOptions.IgnoreCase);
+        private static readonly Regex SaleRxDE = new(@"wurde für (?<price>[\d,.]+) Gil .* (?<city>.+) verkauft", RegexOptions.Compiled | RegexOptions.IgnoreCase);
+        private static readonly Regex SaleRxFR = new(@"vendu pour (?<price>[\d,.]+) gils .* (?<city>.+)", RegexOptions.Compiled | RegexOptions.IgnoreCase);
+        private static readonly Regex SaleRxJP = new(@"(?<price>[\d,.]+)ギル.+(?<city>.+)で売れました", RegexOptions.Compiled | RegexOptions.IgnoreCase);
         private bool _regexErrorLogged = false;
 
         public SalesMonitor() => Svc.Chat.ChatMessage += OnMsg;
@@ -16,14 +21,30 @@ namespace Dagobert
 
         private void OnMsg(XivChatType type, int ts, ref SeString sender, ref SeString msg, ref bool handled)
         {
-            if (type != XivChatType.SystemMessage && type != XivChatType.RetainerSale) return;
             string txt = msg.ToString();
-            if (!txt.Contains("sold for", StringComparison.OrdinalIgnoreCase)) return;
+            
+            bool isSaleMessage = txt.Contains("sold for", StringComparison.OrdinalIgnoreCase) ||
+                                txt.Contains("verkauft", StringComparison.OrdinalIgnoreCase) ||  // German
+                                txt.Contains("vendu", StringComparison.OrdinalIgnoreCase) ||     // French
+                                txt.Contains("売れました", StringComparison.OrdinalIgnoreCase) || // Japanese
+                                txt.Contains("gil", StringComparison.OrdinalIgnoreCase);
+            
+            if (!isSaleMessage) return;
+            
+            Svc.Log.Debug($"[SalesMonitor] Potential sale message detected: {txt}");
 
             try
             {
                 var m = SaleRx.Match(txt);
-                if (!m.Success) return;
+                Svc.Log.Debug($"[SalesMonitor] English regex match: {m.Success}");
+                if (!m.Success) { m = SaleRxDE.Match(txt); Svc.Log.Debug($"[SalesMonitor] German regex match: {m.Success}"); }
+                if (!m.Success) { m = SaleRxFR.Match(txt); Svc.Log.Debug($"[SalesMonitor] French regex match: {m.Success}"); }
+                if (!m.Success) { m = SaleRxJP.Match(txt); Svc.Log.Debug($"[SalesMonitor] Japanese regex match: {m.Success}"); }
+                if (!m.Success)
+                {
+                    Svc.Log.Debug("[SalesMonitor] No regex pattern matched");
+                    return;
+                }
 
                 string pre = txt[..m.Index];
                 if (pre.StartsWith("The ", StringComparison.OrdinalIgnoreCase)) pre = pre[4..];
@@ -31,19 +52,24 @@ namespace Dagobert
                 string rawItem = (idx > 0 ? pre[..idx] : pre).Trim();
 
                 string priceStr = m.Groups["price"].Value.Replace(",", "").Replace(".", "");
+                Svc.Log.Debug($"[SalesMonitor] Extracted price string: '{priceStr}'");
                 if (int.TryParse(priceStr, out int price))
                 {
+                    Svc.Log.Debug($"[SalesMonitor] Parsed price: {price}");
+                    
                     var cfg = Plugin.Configuration;
                     cfg.Initialize();
                     cfg.Stats.TotalGilEarned += price;
                     cfg.Stats.TotalItemsSold++;
 
-                    bool hq = rawItem.Contains("\uE03C") || txt.Contains("(HQ)");
-                    string clean = Communicator.GetCleanItemName(rawItem);
+                    bool hq = StringUtils.ContainsHqIcon(rawItem) || txt.Contains("(HQ)");
+                    string clean = StringUtils.GetCleanItemName(rawItem);
                     string city = m.Groups["city"].Value;
+                    uint resolvedId = ItemUtils.GetItemIdByName(clean);
 
                     cfg.Stats.SalesHistory.Add(new SaleRecord
                     {
+                        ItemId = resolvedId,
                         ItemName = clean,
                         Price = price,
                         IsHq = hq,
@@ -54,7 +80,8 @@ namespace Dagobert
                     if (cfg.Stats.SalesHistory.Count > 100) cfg.Stats.SalesHistory.RemoveAt(0);
                     cfg.Save();
 
-                    DiscordSender.SendSaleNotification(clean, price, city, hq, cfg.Stats.TotalGilEarned, cfg.Stats.TotalItemsSold);
+                    VisualMonitor.LogActivity(ActivityType.Success, $"Sale! {clean} ({price:N0} gil)");
+                    DiscordSender.SendSaleNotification(clean, resolvedId, price, city, hq, cfg.Stats.TotalGilEarned, cfg.Stats.TotalItemsSold);
                 }
             }
             catch (Exception ex)

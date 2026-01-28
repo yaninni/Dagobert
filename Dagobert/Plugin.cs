@@ -19,6 +19,7 @@ public sealed class Plugin : IDalamudPlugin
     [PluginService] public static IAddonLifecycle AddonLifecycle { get; private set; } = null!;
     [PluginService] public static IChatGui ChatGui { get; private set; } = null!;
     [PluginService] public static IContextMenu ContextMenu { get; private set; } = null!;
+    [PluginService] public static ITextureProvider TextureProvider { get; private set; } = null!;
 
 #pragma warning disable CS8618
     public static Configuration Configuration { get; private set; }
@@ -31,6 +32,7 @@ public sealed class Plugin : IDalamudPlugin
 
     public readonly WindowSystem WindowSystem = new("Dagobert");
     public ConfigWindow ConfigWindow { get; init; }
+    public ItemInspector ItemInspector { get; init; }
 
     public Plugin()
     {
@@ -38,6 +40,8 @@ public sealed class Plugin : IDalamudPlugin
         Configuration = PluginInterface.GetPluginConfig() as Configuration ?? new Configuration();
         ConfigWindow = new ConfigWindow();
         WindowSystem.AddWindow(ConfigWindow);
+        ItemInspector = new ItemInspector();
+        WindowSystem.AddWindow(ItemInspector);
 
         CommandManager.AddHandler("/dagobert", new CommandInfo(OnDagobertCommand)
         {
@@ -60,12 +64,17 @@ public sealed class Plugin : IDalamudPlugin
 
     public void Dispose()
     {
+        PluginInterface.UiBuilder.Draw -= DrawUI;
+        PluginInterface.UiBuilder.OpenMainUi -= ToggleConfigUI;
+        PluginInterface.UiBuilder.OpenConfigUi -= ToggleConfigUI;
+        
         _contextMenuIntegration.Dispose();
         WindowSystem.RemoveAllWindows();
         _autoPinch.Dispose();
         _salesMonitor.Dispose();
         CommandManager.RemoveHandler("/dagobert");
         ECommonsMain.Dispose();
+        DiscordSender.Dispose();
     }
 
     private void OnDagobertCommand(string command, string args)

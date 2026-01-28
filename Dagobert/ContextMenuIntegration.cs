@@ -1,8 +1,8 @@
 ﻿using Dalamud.Game.Gui.ContextMenu;
-using Dalamud.Game.Text.SeStringHandling;
 using ECommons.DalamudServices;
 using Lumina.Excel.Sheets;
 using System;
+using Dagobert.Utilities;
 
 namespace Dagobert
 {
@@ -26,8 +26,13 @@ namespace Dagobert
 
         private void OnMenuOpened(IMenuOpenedArgs args)
         {
-            if (args.Target is not MenuTargetInventory inventoryTarget) return;
-            var itemId = inventoryTarget.TargetItem?.ItemId ?? 0;
+            uint itemId = 0;
+
+            if (args.Target is MenuTargetInventory invTarget)
+            {
+                itemId = invTarget.TargetItem?.ItemId ?? 0;
+            }
+
             if (itemId == 0) return;
 
             if (itemId > 1_000_000)
@@ -44,7 +49,7 @@ namespace Dagobert
                 return;
             }
 
-            if (itemData.ItemSearchCategory.RowId == 0) return;
+            if (itemData.Name.ToString() == "") return;
 
             bool isIgnored = false;
             if (Plugin.Configuration.ItemConfigs.TryGetValue(itemId, out var settings))
@@ -59,7 +64,7 @@ namespace Dagobert
                 Name = ignoreLabel,
                 PrefixChar = 'D',
                 PrefixColor = 561,
-                OnClicked = _ => ToggleIgnore(itemId, itemData.Name.ToString(), !isIgnored)
+                OnClicked = _ => ItemUtils.ToggleIgnore(itemId, itemData.Name.ToString(), !isIgnored)
             });
 
             args.AddMenuItem(new MenuItem
@@ -69,24 +74,22 @@ namespace Dagobert
                 PrefixColor = 561,
                 OnClicked = _ => OpenConfigurationForItem(itemId)
             });
-        }
 
-        private void ToggleIgnore(uint itemId, string itemName, bool setIgnore)
-        {
-            if (!Plugin.Configuration.ItemConfigs.ContainsKey(itemId))
+            args.AddMenuItem(new MenuItem
             {
-                Plugin.Configuration.ItemConfigs[itemId] = new ItemSettings();
-            }
+                Name = "Inspect",
+                PrefixChar = 'D',
+                PrefixColor = 561,
+                OnClicked = _ => Plugin.Instance.ItemInspector.Inspect(itemId)
+            });
 
-            Plugin.Configuration.ItemConfigs[itemId].Ignore = setIgnore;
-            Plugin.Configuration.Save();
-
-            var builder = new SeStringBuilder()
-                .AddUiForeground("[Dagobert] ", 45)
-                .AddItemLink(itemId, false)
-                .AddText(setIgnore ? " is now ignored." : " is no longer ignored.");
-
-            Svc.Chat.Print(builder.Build());
+            args.AddMenuItem(new MenuItem
+            {
+                Name = "Open in Garland Tools",
+                PrefixChar = 'D',
+                PrefixColor = 561,
+                OnClicked = _ => ItemUtils.OpenGarlandTools(itemId)
+            });
         }
 
         private void OpenConfigurationForItem(uint itemId)

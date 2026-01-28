@@ -1,5 +1,7 @@
-﻿using ECommons.Automation;
+﻿using System;
+using ECommons.Automation;
 using ECommons.DalamudServices;
+using System.Runtime.CompilerServices;
 using ECommons.UIHelpers.AddonMasterImplementations;
 using ECommons.UIHelpers.AtkReaderImplementations;
 using FFXIVClientStructs.FFXIV.Client.UI;
@@ -7,6 +9,8 @@ using FFXIVClientStructs.FFXIV.Component.GUI;
 using System.Collections.Generic;
 using static ECommons.GenericHelpers;
 using static ECommons.UIHelpers.AtkReaderImplementations.ReaderContextMenu;
+using Dagobert.Windows;
+using Dagobert.Utilities;
 
 namespace Dagobert
 {
@@ -19,13 +23,27 @@ namespace Dagobert
         {
             if (TryGetAddonByName<AtkUnitBase>(addonName, out var addon) && IsAddonReady(addon))
             {
-                if (!addon->IsVisible) return false;
+                if (!addon->IsVisible) 
+                {
+                    Svc.Log.Debug($"FireCallback: {addonName} not visible");
+                    return false;
+                }
+                
+                // Validate addon state
+                if (addon->RootNode == null)
+                {
+                    Svc.Log.Warning($"FireCallback: {addonName} has null RootNode");
+                    return false;
+                }
+                
+                VisualMonitor.LogActivity(ActivityType.Pulse, $"UI Interaction: {addonName}");
                 Callback.Fire(addon, postSetup, args);
                 return true;
             }
             return false;
         }
 
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public static bool IsWindowVisible(string addonName)
         {
             if (TryGetAddonByName<AtkUnitBase>(addonName, out var addon) && IsAddonReady(addon))
@@ -35,6 +53,7 @@ namespace Dagobert
             return false;
         }
 
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public static bool IsWindowVisible(void* addonPtr)
         {
             if (addonPtr == null) return false;
@@ -46,10 +65,12 @@ namespace Dagobert
         {
             if (TryGetAddonByName<AtkUnitBase>(addonName, out var addon) && IsAddonReady(addon))
             {
+                VisualMonitor.LogActivity(ActivityType.Info, $"Closing {addonName}");
                 addon->Close(true);
             }
         }
 
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public static bool? SelectRetainer(int index)
         {
             return FireCallback(UIConsts.AddonRetainerList, true, 2, index);
@@ -74,7 +95,18 @@ namespace Dagobert
                 {
                     var node = addon->UldManager.NodeList[UIConsts.NodeId_SellList_RetainerNameHeader];
                     if (node != null && node->Type == NodeType.Text)
-                        return ((AtkTextNode*)node)->NodeText.ToString().Split('\'')[0].Trim();
+                    {
+                        var text = ((AtkTextNode*)node)->NodeText.ToString();
+                        if (string.IsNullOrEmpty(text)) return "Unknown";
+                        
+                        ReadOnlySpan<char> span = text.AsSpan();
+                        int quoteIdx = span.IndexOf('\'');
+                        if (quoteIdx != -1)
+                        {
+                            span = span.Slice(0, quoteIdx);
+                        }
+                        return span.Trim().ToString();
+                    }
                 }
             }
             return "Unknown";
@@ -89,7 +121,15 @@ namespace Dagobert
                     var listNode = (AtkComponentNode*)addon->UldManager.NodeList[UIConsts.NodeId_SellList_ItemList];
                     if (listNode != null && listNode->Component != null)
                     {
-                        return ((AtkComponentList*)listNode->Component)->ListLength;
+                        try
+                        {
+                            return ((AtkComponentList*)listNode->Component)->ListLength;
+                        }
+                        catch
+                        {
+                            Svc.Log.Warning("GetSellListCount: Failed to read list length");
+                            return 0;
+                        }
                     }
                 }
             }

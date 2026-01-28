@@ -12,9 +12,13 @@ namespace Dagobert
             double u1 = 1.0 - Random.Shared.NextDouble();
             double u2 = 1.0 - Random.Shared.NextDouble();
             double randStdNormal = Math.Sqrt(-2.0 * Math.Log(u1)) * Math.Sin(2.0 * Math.PI * u2);
-            return Math.Clamp((int)(250 + (40 * randStdNormal)), 180, 500);
+            return Math.Clamp((int)(600 + (100 * randStdNormal)), 350, 1200);
         }
-        public static int GetFittsDelay() => Random.Shared.Next(300, 600);
+        public static int GetFittsDelay() => Random.Shared.Next(400, 800);
+        public static int GetMenuNavigationDelay() => Random.Shared.Next(200, 450);
+        public static int GetTabSwitchDelay() => Random.Shared.Next(600, 1100);
+        public static int GetClickDelay() => Random.Shared.Next(15, 65);
+        
         public static int GetCognitiveDelay(int baseDelay)
         {
             if (Random.Shared.Next(100) < 5)

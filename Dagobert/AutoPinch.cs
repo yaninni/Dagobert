@@ -9,19 +9,22 @@ using ECommons.DalamudServices;
 using ECommons.UIHelpers.AddonMasterImplementations;
 using FFXIVClientStructs.FFXIV.Component.GUI;
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Linq;
 using System.Numerics;
 using static ECommons.GenericHelpers;
 using static ECommons.UIHelpers.AtkReaderImplementations.ReaderContextMenu;
-//TODO fix pinch all retainers it's borked
+using Dagobert.Windows;
+using Dagobert.Utilities;
+
 namespace Dagobert
 {
     internal sealed class AutoPinch : Window, IDisposable
     {
         private readonly MarketBoardHandler _mbHandler;
         private readonly TaskManager _tm;
-        private readonly Dictionary<string, int?> _cachedPrices = [];
+        private readonly ConcurrentDictionary<string, int?> _cachedPrices = new();
         private RetainerStats? _stats;
         private int? _newPrice;
         private int? _oldPrice;
@@ -31,6 +34,9 @@ namespace Dagobert
         private int _itemsProcessedSession = 0;
         private int _totalItemsRetainer = 0;
         private int _currentItemIndex = 0;
+
+        private readonly Action _unlistInvDelegate;
+        private readonly Action _unlistRetDelegate;
 
         private DelayStrategy Strategy => Plugin.Configuration.DelayStrategy;
 
@@ -47,13 +53,18 @@ namespace Dagobert
 
             _tm = new TaskManager { TimeLimitMS = 10000, AbortOnTimeout = true };
 
+            _unlistInvDelegate = () => UnlistAllItems(false);
+            _unlistRetDelegate = () => UnlistAllItems(true);
+
             Svc.Chat.ChatMessage += OnChatMessage;
         }
 
         public void Dispose()
         {
+            AbortOperation();
             Svc.Chat.ChatMessage -= OnChatMessage;
             _mbHandler.Dispose();
+            _cachedPrices.Clear();
         }
 
         private void OnChatMessage(XivChatType type, int ts, ref SeString sender, ref SeString msg, ref bool handled)
@@ -89,15 +100,17 @@ namespace Dagobert
                     _currentItemIndex,
                     _totalItemsRetainer,
                     PinchAllRetainerItems,
-                    () => UnlistAllItems(false),
-                    () => UnlistAllItems(true),
+                    _unlistInvDelegate,
+                    _unlistRetDelegate,
                     AbortOperation
                 );
             }
             catch (Exception ex)
             {
                 AbortOperation();
-                if (Plugin.Configuration.ShowErrorsInChat) Svc.Chat.PrintError($"AutoPinch Error: {ex.Message}");
+                Svc.Log.Error(ex, "AutoPinch Draw failed");
+                if (Plugin.Configuration.ShowErrorsInChat) 
+                    Svc.Chat.PrintError($"AutoPinch Error: {ex.Message}");
             }
         }
 
@@ -105,6 +118,14 @@ namespace Dagobert
         {
             _tm.Abort();
             RemoveTalkListeners();
+            VisualMonitor.SetActiveRetainer(null);
+            _skipItem = false;
+            _priceWaitStart = 0;
+            VisualMonitor.LogActivity(ActivityType.Error, "Automation Aborted");
+            // Close any open windows to leave clean stateWindow(UIConsts.AddonItemSearchResult);
+            AddonInteractor.CloseWindow(UIConsts.AddonItemSearchResult);
+            AddonInteractor.CloseWindow(UIConsts.AddonRetainerSell);
+            AddonInteractor.CloseWindow(UIConsts.AddonContextMenu);
         }
 
         private unsafe void PinchAllRetainers()
@@ -126,6 +147,8 @@ namespace Dagobert
             }
 
             DiscordSender.SendLog("[Started] Auto Pinch all.");
+            VisualMonitor.LogActivity(ActivityType.Info, "Starting Global Pinch Scan");
+            VisualMonitor.SyncRetainers(retainers.Select(r => r.Name));
 
             for (int i = 0; i < retainers.Length; i++)
             {
@@ -135,21 +158,35 @@ namespace Dagobert
                 int capturedIndex = i;
                 string capturedName = name;
 
-                _tm.Enqueue(() => AddonInteractor.SelectRetainer(capturedIndex), $"ClickRetainer_{i}");
+                _tm.Enqueue(WaitForRetainerListVisible, $"WaitRetainerList_{i}");
+                _tm.Enqueue((Func<bool?>)(() => { 
+                    VisualMonitor.SetActiveRetainer(capturedName);
+                    VisualMonitor.LogActivity(ActivityType.Pulse, $"Selecting Retainer: {capturedName}");
+                    return AddonInteractor.SelectRetainer(capturedIndex); 
+                }), $"ClickRetainer_{i}");
                 _tm.Enqueue(WaitForSelectStringVisible, $"WaitSelectString_{i}");
-                _tm.Enqueue(() => { _stats = new RetainerStats(capturedName); return true; }, $"InitStats_{i}");
+                _tm.Enqueue(() => { 
+                    _stats = new RetainerStats(capturedName); 
+                    VisualMonitor.LogActivity(ActivityType.Info, $"Processing {capturedName}");
+                    return true; 
+                }, $"InitStats_{i}");
                 _tm.DelayNext(Humanizer.GetReactionDelay());
-
-                _tm.Enqueue(AddonInteractor.ClickSellFromInventory, $"SellItems_{i}");
+                
+                _tm.Enqueue(() => { 
+                    VisualMonitor.LogActivity(ActivityType.Pulse, "Opening Sell Inventory");
+                    return AddonInteractor.ClickSellFromInventory(); 
+                }, $"SellItems_{i}");
                 _tm.Enqueue(WaitForSellListVisible, $"WaitForSellList_{i}");
                 _tm.Enqueue(() => QueueItems(InsertSingleItem, true), $"QueueItems_{i}");
 
-                _tm.DelayNext(Humanizer.GetReactionDelay());
+                _tm.DelayNext(Humanizer.GetTabSwitchDelay());
                 _tm.Enqueue(() => AddonInteractor.CloseWindow(UIConsts.AddonRetainerSellList), $"CloseSellList_{i}");
                 _tm.DelayNext(Humanizer.GetReactionDelay());
                 _tm.Enqueue(() => { SendReport(); return true; }, $"Report_{i}");
+                _tm.Enqueue((Func<bool?>)(() => { VisualMonitor.LogActivity(ActivityType.Info, "Dismissing Retainer..."); return true; }));
+                _tm.DelayNext(Humanizer.GetReactionDelay());
                 _tm.Enqueue(() => AddonInteractor.CloseWindow(UIConsts.AddonSelectString), $"CloseRetainer_{i}");
-                _tm.DelayNext(Humanizer.GetReactionDelay() + 200);
+                _tm.DelayNext(Humanizer.GetTabSwitchDelay() + 200);
             }
 
             _tm.Enqueue(() => { RemoveTalkListeners(); return true; }, "CleanupListeners");
@@ -160,8 +197,10 @@ namespace Dagobert
         {
             if (_tm.IsBusy) return;
             ClearState();
-
+            
+            VisualMonitor.LogActivity(ActivityType.Info, "Starting Local Retainer Scan");
             string retainer = AddonInteractor.GetRetainerNameFromSellList();
+            VisualMonitor.SyncRetainers(new[] { retainer });
             _stats = new RetainerStats(retainer);
 
             QueueItems(EnqueueSingleItem, false);
@@ -173,7 +212,9 @@ namespace Dagobert
             if (_tm.IsBusy) return;
             ClearState();
             _itemsProcessedSession = 0;
+            VisualMonitor.LogActivity(ActivityType.Warning, $"Starting Unlist to {(toRetainer ? "Retainer" : "Inventory")}");
             QueueItems(i => EnqueueUnlist(i, toRetainer), true);
+            _tm.Enqueue((Func<bool?>)(() => { VisualMonitor.LogActivity(ActivityType.Success, "Unlisting Finished"); return true; }));
             _tm.Enqueue(() => DiscordSender.SendLog("[Finished] Unlisting items."));
         }
         private bool? QueueItems(Action<int> queueFunc, bool reverse)
@@ -220,26 +261,44 @@ namespace Dagobert
 
             if (Plugin.Configuration.EnableMisclicks && Random.Shared.Next(100) < 2)
             {
+                tasks.Add(((Func<bool?>)(() => { VisualMonitor.LogActivity(ActivityType.Warning, "Simulating Misclick..."); return true; }), "Misclick_Log"));
                 tasks.Add((() => AddonInteractor.OpenContextMenuForSellItem(index + 1), "Misclick_Open"));
                 tasks.Add((() => { _tm.InsertDelayNext(Humanizer.GetReactionDelay() + 200); return true; }, "Misclick_Delay1"));
                 tasks.Add((() => { AddonInteractor.CloseWindow(UIConsts.AddonContextMenu); return true; }, "Misclick_Close"));
                 tasks.Add((() => { _tm.InsertDelayNext(Humanizer.GetReactionDelay() + 400); return true; }, "Misclick_Delay2"));
             }
 
-            tasks.Add((() => { _tm.InsertDelayNext(Humanizer.GetFittsDelay()); return true; }, "FittsDelay"));
-            tasks.Add((() => AddonInteractor.OpenContextMenuForSellItem(index), $"Ctx_{index}"));
-
+            tasks.Add(((Func<bool?>)(() => { VisualMonitor.LogActivity(ActivityType.Info, $"Item Index: {index}"); return true; }), "Item_Log"));
+            tasks.Add((() => { _tm.InsertDelayNext(Humanizer.GetReactionDelay() + Humanizer.GetFittsDelay()); return true; }, "OrganicDelay_Ctx"));
+            tasks.Add(((Func<bool?>)(() => { VisualMonitor.LogActivity(ActivityType.Pulse, "Opening Context Menu"); return AddonInteractor.OpenContextMenuForSellItem(index); }), $"Ctx_{index}"));
+ 
             tasks.Add((WaitForContextMenuVisible, "WaitMenu"));
+            tasks.Add((() => { 
+                VisualMonitor.LogActivity(ActivityType.Info, "Scanning Menu...");
+                _tm.InsertDelayNext(Humanizer.GetMenuNavigationDelay()); 
+                return true; 
+            }, "OrganicDelay_Scan"));
+            tasks.Add((() => { _tm.InsertDelayNext(Humanizer.GetReactionDelay()); return true; }, "DelayAdj"));
             tasks.Add((ClickAdjustPrice, $"Adj_{index}"));
             tasks.Add((WaitForRetainerSellVisible, "WaitSellWin"));
-
+ 
+            tasks.Add(((Func<bool?>)(() => {
+                VisualMonitor.LogActivity(ActivityType.Pulse, "Comparing Prices");
+                return true;
+            }), "LogCompare"));
             tasks.Add((DelayMarketBoard, $"WaitMB_{index}"));
+            tasks.Add((() => { 
+                VisualMonitor.LogActivity(ActivityType.Info, "Reading Price Data...");
+                _tm.InsertDelayNext(Humanizer.GetTabSwitchDelay()); 
+                return true; 
+            }, "OrganicDelay_Cmp"));
             tasks.Add((ClickComparePrice, $"Cmp_{index}"));
             tasks.Add((WaitForSearchResultVisible, "WaitSearchWin"));
             tasks.Add((WaitForPriceData, "WaitData"));
             tasks.Add((CheckForBaitInspection, $"BaitCheck_{index}"));
 
             tasks.Add((() => {
+                VisualMonitor.LogActivity(ActivityType.Info, "Simulating Human Delay");
                 int rnd = RandomDelayGenerator.GetRandomDelay(Plugin.Configuration.MarketBoardKeepOpenMin, Plugin.Configuration.MarketBoardKeepOpenMax, Strategy);
                 if (Plugin.Configuration.EnableAdvancedHumanization) rnd = Humanizer.GetCognitiveDelay(rnd);
                 if (Plugin.Configuration.EnableFatigue) rnd += (_itemsProcessedSession * 50);
@@ -270,6 +329,15 @@ namespace Dagobert
             if (AddonInteractor.IsWindowVisible(UIConsts.AddonRetainerSellList))
             {
                 _tm.DelayNext(Humanizer.GetReactionDelay());
+                return true;
+            }
+            return false;
+        }
+
+        private bool? WaitForRetainerListVisible()
+        {
+            if (AddonInteractor.IsWindowVisible(UIConsts.AddonRetainerList))
+            {
                 return true;
             }
             return false;
@@ -323,11 +391,16 @@ namespace Dagobert
             if (_skipItem) return true;
             if (_newPrice.HasValue) return true;
 
-            if (_priceWaitStart == 0) _priceWaitStart = Environment.TickCount64;
-            if (Environment.TickCount64 - _priceWaitStart > 4000)
+            if (_priceWaitStart == 0) 
+            {
+                _priceWaitStart = Environment.TickCount64;
+            }
+            
+            long elapsed = Environment.TickCount64 - _priceWaitStart;
+            if (elapsed > 6000)
             {
                 _skipItem = true;
-                _stats?.AddError("Unknown", "Skipped (Market data timeout).");
+                _stats?.AddError("Unknown", 0, "Skipped (Market data timeout).");
                 return true;
             }
             return false;
@@ -390,6 +463,7 @@ namespace Dagobert
         {
             if (_skipItem)
             {
+                VisualMonitor.LogActivity(ActivityType.Warning, "Skipping: Item Flagged");
                 AddonInteractor.CloseWindow(UIConsts.AddonItemSearchResult);
                 AddonInteractor.CloseWindow(UIConsts.AddonRetainerSell);
                 return true;
@@ -401,7 +475,10 @@ namespace Dagobert
             if (_newPrice == MarketBoardHandler.PRICE_IGNORED)
             {
                 var d = AddonInteractor.GetRetainerSellWindowData();
-                _stats?.AddSkip(Communicator.GetCleanItemName(d.ItemName), "Item Ignored (Config).");
+                string cleanName = StringUtils.GetCleanItemName(d.ItemName);
+                uint id = ItemUtils.GetItemIdByName(cleanName);
+                VisualMonitor.LogActivity(ActivityType.Info, $"Ignored: {cleanName}");
+                _stats?.AddSkip(cleanName, id, "Item Ignored (Config).");
                 AddonInteractor.CloseWindow(UIConsts.AddonRetainerSell);
                 return true;
             }
@@ -409,7 +486,10 @@ namespace Dagobert
             if (_newPrice == MarketBoardHandler.PRICE_NO_DATA || !_newPrice.HasValue)
             {
                 var d = AddonInteractor.GetRetainerSellWindowData();
-                _stats?.AddSkip(Communicator.GetCleanItemName(d.ItemName), "No market data / No competition.");
+                string cleanName = StringUtils.GetCleanItemName(d.ItemName);
+                uint id = ItemUtils.GetItemIdByName(cleanName);
+                VisualMonitor.LogActivity(ActivityType.Info, $"No Competition: {cleanName}");
+                _stats?.AddSkip(cleanName, id, "No market data / No competition.");
                 AddonInteractor.CloseWindow(UIConsts.AddonRetainerSell);
                 return true;
             }
@@ -417,24 +497,24 @@ namespace Dagobert
             var data = AddonInteractor.GetRetainerSellWindowData();
             if (data.ItemName == "" || !data.AskingPrice.HasValue)
             {
-                _stats?.AddError("Unknown", "Could not read current price.");
+                _stats?.AddError("Unknown", 0, "Could not read current price.");
+                VisualMonitor.LogActivity(ActivityType.Error, "Read Error: Invalid Data");
                 AddonInteractor.CloseWindow(UIConsts.AddonRetainerSell);
                 return true;
             }
 
             var raw = data.ItemName;
-            var clean = Communicator.GetCleanItemName(raw);
+            var clean = StringUtils.GetCleanItemName(raw);
             _oldPrice = data.AskingPrice.Value;
 
             // Failsafe Logic
-            var resolvedId = Svc.Data.GetExcelSheet<Lumina.Excel.Sheets.Item>()
-                .FirstOrDefault(i => i.Name.ToString().Equals(clean, StringComparison.OrdinalIgnoreCase)).RowId;
+            var resolvedId = ItemUtils.GetItemIdByName(clean);
 
             if (resolvedId > 0 && Plugin.Configuration.ItemConfigs.TryGetValue(resolvedId, out var failsafeSettings))
             {
                 if (failsafeSettings.Ignore)
                 {
-                    _stats?.AddSkip(clean, "Item Ignored (Failsafe).");
+                    _stats?.AddSkip(clean, resolvedId, "Item Ignored (Failsafe).");
                     AddonInteractor.CloseWindow(UIConsts.AddonRetainerSell);
                     return true;
                 }
@@ -461,11 +541,11 @@ namespace Dagobert
                 {
                     _cachedPrices.TryAdd(raw, _newPrice);
                     AddonInteractor.SetRetainerSellPrice(_newPrice.Value);
-                    Communicator.PrintPriceUpdate(raw, _oldPrice.Value, _newPrice.Value, cut);
-
+                    
                     if (_oldPrice.Value != _newPrice.Value)
                     {
-                        _stats?.AddChange(clean, _oldPrice.Value, _newPrice.Value, MathF.Abs(cut));
+                        VisualMonitor.LogActivity(ActivityType.Success, $"Updated: {clean} -> {_newPrice.Value}g");
+                        _stats?.AddChange(clean, resolvedId, _oldPrice.Value, _newPrice.Value, MathF.Abs(cut));
                         Plugin.Configuration.Initialize();
                         Plugin.Configuration.Stats.TotalUndercutsMade++;
                         Plugin.Configuration.Save();
@@ -473,20 +553,21 @@ namespace Dagobert
                     }
                     else
                     {
-                        _stats?.AddSkip(clean, "Price already optimal.");
+                        VisualMonitor.LogActivity(ActivityType.Info, $"Optimal: {clean}");
+                        _stats?.AddSkip(clean, resolvedId, "Price already optimal.");
                         AddonInteractor.ConfirmRetainerSellPrice(false);
                     }
                 }
                 else
                 {
                     Communicator.PrintAboveMaxCutError(raw);
-                    _stats?.AddSkip(clean, "Cut limit exceeded.");
+                    _stats?.AddSkip(clean, resolvedId, "Cut limit exceeded.");
                     AddonInteractor.ConfirmRetainerSellPrice(false);
                 }
             }
             else
             {
-                _stats?.AddError(clean, "Invalid price calculation.");
+                _stats?.AddError(clean, resolvedId, "Invalid price calculation.");
                 AddonInteractor.ConfirmRetainerSellPrice(false);
             }
 
@@ -497,6 +578,12 @@ namespace Dagobert
         private bool? ClickContextWithdraw(bool toRetainer)
         {
             var entries = AddonInteractor.GetContextMenuEntries();
+            if (entries == null || entries.Count == 0)
+            {
+                Svc.Log.Warning("ClickContextWithdraw: No context menu entries found");
+                return true;
+            }
+            
             string[] searchTerms = toRetainer ? ["retainer", "gehilfen", "servant", "リテイナー"] : ["inventory", "besitz", "inventaire", "所持品"];
 
             for (int i = 0; i < entries.Count; i++)
@@ -519,6 +606,7 @@ namespace Dagobert
         {
             _newPrice = null;
             _cachedPrices.Clear();
+            VisualMonitor.SetActiveRetainer(null);
             _skipItem = false;
             _stats = null;
             _totalItemsRetainer = 0;

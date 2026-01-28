@@ -5,6 +5,7 @@ using FFXIVClientStructs.FFXIV.Component.GUI;
 using System;
 using System.Numerics;
 using static ECommons.GenericHelpers;
+using Dagobert.Utilities;
 
 namespace Dagobert
 {
@@ -62,12 +63,12 @@ namespace Dagobert
                     if (ImGui.Button("Auto Pinch")) onPinch();
 
                     if (ImGui.Button("Unlist (Inv)")) onUnlistInventory();
-                    ImGuiHelper.Tooltip("Return all listed items to Inventory");
+                    ImGuiUtils.Tooltip("Return all listed items to Inventory");
 
                     ImGui.SameLine();
 
                     if (ImGui.Button("Unlist (Ret)")) onUnlistRetainer();
-                    ImGuiHelper.Tooltip("Return all listed items to Retainer Inventory");
+                    ImGuiUtils.Tooltip("Return all listed items to Retainer Inventory");
                 }
             }
         }

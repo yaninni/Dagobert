@@ -1,53 +1,18 @@
 using System;
-using System.Linq;
-using System.Text;
-using System.Text.RegularExpressions;
 using Dalamud.Game.Text.SeStringHandling;
 using Dalamud.Game.Text.SeStringHandling.Payloads;
 using ECommons.DalamudServices;
-using Lumina.Excel;
-using Lumina.Excel.Sheets;
+using Dagobert.Utilities;
 
 namespace Dagobert;
 
 public static class Communicator
 {
-    private static readonly ExcelSheet<Item> ItemSheet = Svc.Data.GetExcelSheet<Item>();
-    private static readonly Regex CleanNameRegex = new Regex(@"[^\p{L}\p{N}\p{P}\p{S}\s]+", RegexOptions.Compiled);
+    public static string GetGarlandToolsLink(uint itemId) => ItemUtils.GetGarlandToolsLink(itemId);
 
-    public static string GetCleanItemName(string rawName)
-    {
-        if (string.IsNullOrEmpty(rawName)) return "Unknown Item";
-        try
-        {
-            var se = SeString.Parse(Encoding.UTF8.GetBytes(rawName));
-            var sb = new StringBuilder();
-            foreach (var p in se.Payloads) if (p is TextPayload tp) sb.Append(tp.Text);
-            
-            string clean = sb.Length > 0 ? sb.ToString() : rawName;
-            
-            clean = clean.Replace("\uE03C", "").Replace("\uE03B", "");
-            
-            clean = new string(clean.Where(c => !char.IsControl(c)).ToArray());
-            
-            int startIdx = 0;
-            while (startIdx < clean.Length)
-            {
-                char c = clean[startIdx];
-                if (char.IsLetterOrDigit(c) || c == '(' || c == '[' || c == '{' || c == '<') break;
-                if (c == '%' || c == '&' || char.IsWhiteSpace(c))
-                {
-                    startIdx++;
-                    continue;
-                }
-                break;
-            }
-            
-            if (startIdx >= clean.Length) return clean.Trim();
-            return clean.Substring(startIdx).Trim();
-        }
-        catch { return "Unknown Item"; }
-    }
+    public static uint GetItemIdByName(string name) => ItemUtils.GetItemIdByName(name);
+
+    public static string GetCleanItemName(string rawName) => StringUtils.GetCleanItemName(rawName);
 
     public static void PrintPriceUpdate(string itemName, int? oldPrice, int? newPrice, float cutPercentage)
     {
@@ -65,7 +30,7 @@ public static class Communicator
                 Svc.Chat.Print(seString);
             }
             else
-                Svc.Chat.Print($"{GetCleanItemName(itemName)}: Pinching from {oldPrice.Value:N0} to {newPrice.Value:N0} gil, a {dec} of {MathF.Abs(MathF.Round(cutPercentage, 2))}%");
+                Svc.Chat.Print($"{StringUtils.GetCleanItemName(itemName)}: Pinching from {oldPrice.Value:N0} to {newPrice.Value:N0} gil, a {dec} of {MathF.Abs(MathF.Round(cutPercentage, 2))}%");
         }
     }
 
@@ -73,11 +38,15 @@ public static class Communicator
     {
         try
         {
-            var cleanedName = GetCleanItemName(itemName);
-            var isHq = itemName.Contains('\uE03C');
+            ItemUtils.EnsureCache();
+            var cleanedName = StringUtils.GetCleanItemName(itemName);
+            var isHq = StringUtils.ContainsHqIcon(itemName);
+            var id = ItemUtils.GetItemIdByName(cleanedName);
 
-            var item = ItemSheet.FirstOrDefault(i => i.Name.ToString().Equals(cleanedName, StringComparison.OrdinalIgnoreCase));
-            if (item.RowId > 0) return new ItemPayload(item.RowId, isHq);
+            if (id > 0)
+            {
+                return new ItemPayload(id, isHq);
+            }
         }
         catch { }
         return null;
@@ -96,7 +65,7 @@ public static class Communicator
                     .Build();
                 Svc.Chat.PrintError(seString);
             }
-            else Svc.Chat.PrintError($"{GetCleanItemName(itemName)}: Item ignored because it would cut the price by more than {Plugin.Configuration.MaxUndercutPercentage}%");
+            else Svc.Chat.PrintError($"{StringUtils.GetCleanItemName(itemName)}: Item ignored because it would cut the price by more than {Plugin.Configuration.MaxUndercutPercentage}%");
         }
     }
 
@@ -125,7 +94,7 @@ public static class Communicator
                     .Build();
                 Svc.Chat.PrintError(seString);
             }
-            else Svc.Chat.PrintError($"{GetCleanItemName(itemName)}: No price to set, please set price manually");
+            else Svc.Chat.PrintError($"{StringUtils.GetCleanItemName(itemName)}: No price to set, please set price manually");
         }
     }
 

@@ -10,11 +10,13 @@ public enum PricingPersonality { Standard, CleanNumbers, PoliteMatch }
 [Serializable]
 public class SaleRecord
 {
+    public uint ItemId { get; set; }
     public string ItemName { get; set; } = "";
     public int Price { get; set; }
     public bool IsHq { get; set; }
     public long Timestamp { get; set; }
     public string City { get; set; } = "";
+    public long ListingTime { get; set; }
 }
 
 [Serializable]
@@ -65,7 +67,6 @@ public sealed class Configuration : IPluginConfiguration
     public bool StopOnTell { get; set; } = true;
     public bool MouseEntropyCheck { get; set; } = true;
 
-    // --- UI ---
     public bool ShowErrorsInChat { get; set; } = true;
     public bool ShowPriceAdjustmentsMessages { get; set; } = true;
     public bool ShowRetainerNames { get; set; } = true;
@@ -74,6 +75,19 @@ public sealed class Configuration : IPluginConfiguration
     public HashSet<string> EnabledRetainerNames { get; set; } = [];
     public List<string> LastKnownRetainerNames { get; set; } = [];
 
-    public void Initialize() { if (Stats == null) Stats = new GlobalStats(); }
+    public void Initialize() 
+    { 
+        if (Stats == null) Stats = new GlobalStats();
+        
+        if (GetMBPricesDelayMin < 500) GetMBPricesDelayMin = 500;
+        if (GetMBPricesDelayMax < GetMBPricesDelayMin) GetMBPricesDelayMax = GetMBPricesDelayMin + 1000;
+        if (MarketBoardKeepOpenMin < 100) MarketBoardKeepOpenMin = 100;
+        if (MarketBoardKeepOpenMax < MarketBoardKeepOpenMin) MarketBoardKeepOpenMax = MarketBoardKeepOpenMin + 1000;
+        
+        if (MaxUndercutPercentage <= 0) MaxUndercutPercentage = 100.0f;
+        if (MaxUndercutPercentage > 100) MaxUndercutPercentage = 100.0f;
+        
+        if (UndercutAmount < 0) UndercutAmount = 1;
+    }
     public void Save() => Plugin.PluginInterface.SavePluginConfig(this);
 }
