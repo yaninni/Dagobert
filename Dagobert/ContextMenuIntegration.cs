@@ -2,7 +2,9 @@
 using ECommons.DalamudServices;
 using Lumina.Excel.Sheets;
 using System;
+using System.Diagnostics.CodeAnalysis;
 using Dagobert.Utilities;
+using FFXIVClientStructs.FFXIV.Client.UI.Agent;
 
 namespace Dagobert
 {
@@ -28,28 +30,34 @@ namespace Dagobert
         {
             uint itemId = 0;
 
-            if (args.Target is MenuTargetInventory invTarget)
+            if (args.MenuType == ContextMenuType.Inventory)
             {
-                itemId = invTarget.TargetItem?.ItemId ?? 0;
+                itemId = (args.Target as MenuTargetInventory)?.TargetItem?.BaseItemId ?? 0u;
+            }
+            else
+            {
+                itemId = GetItemIdFromAgent(args.AddonName);
+
+                if (itemId == 0u)
+                {
+                    Svc.Log.Debug("Failed to get item ID from agent {0}", args.AddonName ?? "null");
+                    itemId = (uint)Svc.GameGui.HoveredItem % 500000;
+                }
             }
 
-            if (itemId == 0) return;
-
-            if (itemId > 1_000_000)
-                itemId -= 1_000_000;
-
-            Item itemData;
-            try
+            if (itemId == 0u)
             {
-                itemData = Svc.Data.GetExcelSheet<Item>().GetRow(itemId);
-                if (itemData.RowId == 0) return;
-            }
-            catch (Exception)
-            {
+                Svc.Log.Debug("Failed to get item ID for context menu in {0}", args.AddonName ?? "null");
                 return;
             }
 
-            if (itemData.Name.ToString() == "") return;
+            var item = Svc.Data.GetExcelSheet<Item>().GetRowOrDefault(itemId);
+
+            if (!item.HasValue)
+            {
+                Svc.Log.Debug("Failed to get item data for item ID {0}", itemId);
+                return;
+            }
 
             bool isIgnored = false;
             if (Plugin.Configuration.ItemConfigs.TryGetValue(itemId, out var settings))
@@ -64,7 +72,7 @@ namespace Dagobert
                 Name = ignoreLabel,
                 PrefixChar = 'D',
                 PrefixColor = 561,
-                OnClicked = _ => ItemUtils.ToggleIgnore(itemId, itemData.Name.ToString(), !isIgnored)
+                OnClicked = _ => ItemUtils.ToggleIgnore(itemId, item.Value.Name.ToString(), !isIgnored)
             });
 
             args.AddMenuItem(new MenuItem
@@ -90,6 +98,25 @@ namespace Dagobert
                 PrefixColor = 561,
                 OnClicked = _ => ItemUtils.OpenGarlandTools(itemId)
             });
+        }
+
+        private unsafe uint GetItemIdFromAgent(string? addonName)
+        {
+            if (string.IsNullOrEmpty(addonName))
+                return 0u;
+
+            var itemId = addonName switch
+            {
+                "ChatLog" => AgentChatLog.Instance()->ContextItemId,
+                "GatheringNote" => *(uint*)((nint)AgentGatheringNote.Instance() + 0xA0),
+                "GrandCompanySupplyList" => *(uint*)((nint)AgentGrandCompanySupply.Instance() + 0x54),
+                "ItemSearch" => (uint)AgentContext.Instance()->UpdateCheckerParam,
+                "RecipeNote" => AgentRecipeNote.Instance()->ContextMenuResultItemId,
+
+                _ => 0u,
+            };
+
+            return itemId % 500000;
         }
 
         private void OpenConfigurationForItem(uint itemId)
